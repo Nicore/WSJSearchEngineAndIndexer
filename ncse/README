@@ -1,0 +1,16 @@
+WSJ Search Engine + Indexer - Nick Comer
+
+Index location: <index location>/
+Index names: index-docno, index-word, index-post
+
+Compile parser/indexer: gcc -W -Wall -ansi -pedantic -g mylib.c flexarray.c tree.c index.c parse.c main.c -o parser
+Run parser: ./parser <Location of xml file>
+
+Compile search engine: gcc -W -Wall -ansi -pedantic -g mylib.c flexarray.c searcheng.c -o searcher
+Run search engine: ./searcher [docno index] [dictionary index] [postings index] < <file of queries>
+
+Uses naive ranking, where rank value is the sum of all the search terms present in the document.
+
+Reguler expression for words: [a-zA-Z0-9]([-']?[a-zA-Z0-9])*
+
+

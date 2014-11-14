@@ -1,0 +1,605 @@
+/**
+ * @file searcheng.c
+ * @author Nick Comer
+ * @date April 2012
+ *
+ * Reads a query from stdin and produces results on stdout
+ * A query may be a set of _zero_ or more terms.
+ * Document-level index is sufficient.
+ * No wildcard or regex searching.
+ * For each result (up to a limit), output a line with two columns:
+ * <DOCNO> <rsv>
+ * Where DOCNO is wsj document number and rsv is the relevance score.
+ * Sorted from highest rsv to lowest rsv.
+ * Tested on indexes but not for seen queries.
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <ctype.h>
+#include <string.h>
+#include "flexarray.h"
+#include "mylib.h"
+#include <time.h>
+
+#define CR 13
+#define LF 10
+#define EOF_MARKER 26
+#define MAX_LINE_LEN 100 
+
+
+typedef struct {
+   char *word;
+   long number;
+} line;
+
+typedef struct {
+   char *journal;
+} recd;
+
+typedef struct {
+   flexarray docs;
+   flexarray freqs;
+} postlist;
+
+
+char *wd_ind_def = "/home/cshome/n/ncomer/431IR/indexes/indexes-good/index-word";
+char *dci_ind_def = "/home/cshome/n/ncomer/431IR/indexes/indexes-good/index-docno";
+char *pst_ind_def = "/home/cshome/n/ncomer/431IR/indexes/indexes-good/index-post";
+
+int binary_search(line *dictn, char *key, int min, int max);
+int seekpost(FILE *input, long where);
+int FileRead(FILE *inputF);
+int DocNoRead(FILE *input);
+int addtoPostlist(postlist item);
+int addtoLine(line item);
+int addtoRecd(recd docn);
+/*void quicksort(int n);*/
+
+line *dictionary = NULL;
+int num_es_dict = 0;
+int num_al_dict = 0;
+
+recd *docdex = NULL;
+int num_es_docd = 0;
+int num_al_docd = 0;
+void *_tmp;
+
+postlist *postings = NULL;
+postlist poststream;
+int num_es_post = 0;
+int num_al_post = 0;
+
+flexarray dict_indexes;
+
+
+
+int main(int argc, char **argv) {
+
+   /*time_t t1, t2;*/
+   FILE *dict;
+   FILE *post;
+   FILE *docno;
+   char *wd_ind;
+   char *dci_ind;
+   char *pst_ind;
+   /*int wd_cap = 20;
+   int wd_ct_cap = 2;
+   int wd_len;
+   char wd_tmp[100];
+   int c;
+   int docid, docrel, d;
+   line *arr_wd_ind;*/   
+   int result;
+   int i = 0;
+   int j = 0;
+   char w[256][256];
+   
+
+   /*(void) time(&t1);*/
+   
+   if (argc == 4) { /*if the index locations are specified*/
+      dci_ind = argv[1];
+      wd_ind = argv[2];
+      pst_ind = argv[3];
+   } else { /*use default indexes*/
+      dci_ind = dci_ind_def;
+      wd_ind = wd_ind_def;
+      pst_ind = pst_ind_def;
+      fprintf(stderr, "Using default indexes.\n");
+   }
+   
+   fprintf(stderr, "Enter a line of query terms:\n");
+   
+   /*w = emalloc(wd_ct_cap * sizeof w[0][0]);*/
+   
+   while (scanf("%s", w[i]) != EOF ) {
+      i++;
+   }
+
+   /*for (j = 0; j < i; j++) {
+      printf("%s ", w[j]);
+      }*/
+
+   if (i == 0) {
+      fprintf(stdout, "No search terms inputted");
+   } else { /*actually search*/
+      /*show search terms*/
+      fprintf(stderr, "Results for query:");
+      for (j = 0; j < i; j++) {
+         fprintf(stderr, " %s", w[j]);
+      }
+      fprintf(stderr, "\n");
+
+      dict = fopen(wd_ind, "rb");
+      if (dict == 0) {
+         perror(wd_ind);
+         exit(EXIT_FAILURE);
+      }
+      /*read in the dictionary and then close the file*/
+      result = FileRead(dict);
+      if (fclose(dict) < 0) {
+         perror("Closing dictionary");
+         exit(EXIT_FAILURE);
+      }
+
+      /*read in the docno list*/
+      docno = fopen(dci_ind, "rb");
+      if (docno == 0) {
+         perror(dci_ind);
+         exit(EXIT_FAILURE);
+      }
+      
+      result = DocNoRead(docno);
+      if (fclose(docno) < 0) {
+         perror("Closing docno index");
+         exit(EXIT_FAILURE);
+      }
+      
+      
+      /*look up the search terms in the dictionary array*/
+      dict_indexes = flexarray_new();
+      for (j = 0; j < i; j++) {
+         flexarray_append(dict_indexes, binary_search(dictionary, w[j], 0, num_es_dict));
+      }
+      flexarray_print(dict_indexes);
+      
+
+
+      
+      /*now seek the postings list from the new file.*/
+      poststream.docs = flexarray_new();
+      poststream.freqs = flexarray_new();
+      
+      post = fopen(pst_ind, "rb");
+      if (post == 0) {
+         perror(pst_ind);
+         exit(EXIT_FAILURE);
+      }
+      for (j = 0; j < i; j++) {
+      
+      	result = seekpost(post, dictionary[flexarray_get(dict_indexes, j)].number);
+      }
+      if (fclose(post) < 0) {
+         perror("Closing postings list");
+         exit(EXIT_FAILURE);
+      }
+
+
+	for (j = 0; j < flexarray_size(poststream.docs); j++) {
+		fprintf(stdout, "%s %i\n", docdex[flexarray_get(poststream.docs, j)].journal, flexarray_get(poststream.freqs, j));
+      }
+
+	/*now do relevance ranking*/
+      
+      
+   }
+
+   
+   /*(void) time(&t2);
+   fprintf(stderr, "Milliseconds: %i\n", (int) (t2-t1));*/
+
+   for (i = num_es_dict-1; i > 0; i--) {
+      free(dictionary[i].word);
+   }
+   free(dictionary);
+   for (i = num_es_docd-1; i > 0; i--) {
+      free(docdex[i].journal);
+   }
+   free(docdex);
+   /*for (i = 0; i < num_es_post; i++) {
+      flexarray_delete(postings[i].docs);
+      flexarray_delete(postings[i].freqs);
+   }
+   free(postings);*/
+
+   
+   flexarray_delete(dict_indexes);
+
+   free(_tmp);
+   return EXIT_SUCCESS;
+
+}
+
+/*void quicksort(int n) {
+   int i, j;
+   int pivot;
+   int ph1, ph2;
+
+   if (n > 1) {
+      pivot = flexarray_get(poststream.freqs, 0);
+      i = -1;
+      j = n;
+      fprintf(stderr, "i");
+      for (;;) {
+      	 do {i++;} while (flexarray_get(poststream.freqs, i) < pivot);
+         do {j--;} while (flexarray_get(poststream.freqs, j) > pivot);
+         if (i < j) {
+            ph1 = flexarray_get(poststream.freqs, i);
+            ph2 = flexarray_get(poststream.docs, i)
+            flexarray_set(poststream.freqs, i, flexarray_get(poststream.freqs, j));
+            flexarray_set(poststream.docs, i, flexarray_get(poststream.docs, j));
+            flexarray_set(poststream.freqs, j, ph1);
+            flexarray_set(poststream.docs, j, ph2);
+            
+         } else {
+            break;
+         }
+      //
+         do {i++;} while (a[i] < pivot);
+         do {j--;} while (a[j] > pivot);
+         if (i < j) {
+            ph = a[i];
+            a[i] = a[j];
+            a[j] = ph;
+         } else {
+            break;
+         }
+         //
+      }
+   
+   fprintf(stderr, "x");
+   quick_sort(j+1);
+   quick_sort(a+(j+1),n-j-1); 
+   }
+}*/
+
+int binary_search(line *dictn, char *key, int min, int max) {
+   int mid;
+   int dir;
+   
+   if (max < min) {
+      return -1;
+   } else {
+      mid = (min + max) /2;
+      dir = strcmp(dictn[mid].word, key);
+
+      if (dir > 0) {
+         return binary_search(dictn, key, min, mid-1);
+      } else if (dir < 0) {
+         return binary_search(dictn, key, mid+1, max);
+      } else {
+         return mid;
+      }
+   }
+
+
+}
+
+int seekpost(FILE *posts, long where) {
+   int swap = 2;
+   /*postlist temp;*/
+   char strint[20];
+   int c;
+   int dupe = 0;
+   int dupeid = 0;
+   int tempint;
+   int i = 0;
+   int docnumber = 0;
+
+   fprintf(stderr, "Seeking: %ld\n", where);
+	tempint = 0;   
+   /*temp.docs = flexarray_new();
+   temp.freqs = flexarray_new();*/
+   
+   fseek(posts, where, SEEK_SET);
+   
+   /*scan through line until '|', first int is doc, second is freq*/
+   c = getc(posts);
+   
+   while (c != '|') { /*while we haven't hit the end of the line*/
+      /*i = 0;*/
+      
+      if (isdigit(c)) {
+         strint[i] = c;
+         i++;
+      } else if (c == ':' || c == ' ') {
+         
+         if ((swap % 2) == 0) {
+            strint[i] = '\0';
+            
+            tempint = (int) strtol(strint, NULL, 0);
+            docnumber += tempint;
+            /*flexarray_append(temp.docs, docnumber-1);*/
+            dupe = flexarray_check(poststream.docs, docnumber-1);
+            if (dupe == -1) {
+            	flexarray_append(poststream.docs, docnumber-1);
+            } else if (dupe > 0) {
+            	dupeid = dupe;
+            }
+            	
+            i = 0;
+         } else {
+            strint[i] = '\0';
+            
+            tempint = (int)strtol(strint, NULL, 0);
+            /*flexarray_append(temp.freqs, tempint);*/
+            if (dupe == -1) {
+	            flexarray_append(poststream.freqs, tempint);
+	        } else if (dupe > 0) {
+	        	flexarray_set(poststream.freqs, dupe, flexarray_get(poststream.freqs, dupe)+tempint);
+	        }
+            i = 0;
+         }
+
+            
+         swap++;
+         
+         }
+      c = getc(posts);
+   }
+   /*if (addtoPostlist(temp) == -1) {
+      fprintf(stderr, "Failed to add temp to postings\n");
+   }*/
+	rewind(posts);
+   
+   return 1;
+}
+
+int FileRead(FILE *dict) {
+   int newLine;
+   long FileLen;
+   long ind;
+   long lnCt;
+   long lnLen;
+   int spc = 0;
+   char *wordrec;
+   char whitespace;
+   char *seekrec;
+   long seekval;
+   long stPos;
+   long tChars;
+   char cLine[MAX_LINE_LEN]; /*the current line*/
+   char *cFile;
+   char *cPtr;
+
+   line temp;
+   
+   fseek(dict, 0L, SEEK_END);
+   FileLen = ftell(dict);
+   rewind(dict);
+
+   cFile = calloc(FileLen +1, sizeof(char));
+
+   if (cFile == NULL) {
+      fprintf(stderr, "Insufficient memory to read file\n");
+      return 0;
+   }
+
+   fread(cFile, FileLen, 1, dict); /*read entire file into cFile*/
+
+   lnCt = 0L;
+   tChars = 0L;
+
+   cPtr = cFile; /*point to beginning of array*/
+
+   while (*cPtr) { /*read until null char*/
+      ind = 0L; /*reset values*/
+      newLine = 0;
+      stPos = tChars;
+
+      
+      
+      while (*cPtr) { /*read until null char*/
+                             
+         if (!newLine) { 
+            if (*cPtr == CR || *cPtr == LF) { /*if we hit newline char*/
+               newLine = 1;
+            } else {
+               cLine[ind++] = *cPtr;
+               
+               /*cLine[ind++] = *cPtr;*/
+            }
+         } else if (*cPtr != CR && *cPtr != LF) { /*already found newline*/
+            break;
+         }
+         /*cLine[ind++] = *cPtr++;*/ /*add char to output and increment*/
+         whitespace = *cPtr;
+         if (whitespace == ' ') {
+            spc = ind;
+         }
+
+         cPtr++;
+         tChars++;
+         
+      } /*end while *cPtr*/
+      cLine[ind] = '\0'; /*end string*/
+      lnCt++;
+      lnLen = strlen(cLine);
+
+      wordrec = emalloc((spc) *sizeof wordrec[0]);
+      seekrec = emalloc((lnLen-spc+1) *sizeof seekrec[0]);
+      strncpy(wordrec, cLine, spc-1);
+      wordrec[spc-1] = '\0';
+      strncpy(seekrec, (cLine+(spc)), ((ind+1)-spc));
+      
+      seekval = strtol(seekrec, NULL, 0);
+      /*PrintLine(cLine, lnCt, lnLen, stPos, NULL, 0);*/
+      temp.word = emalloc((strlen(wordrec)+1) * sizeof wordrec[0]);
+      strncpy(temp.word, wordrec, strlen(wordrec)+1);
+      temp.number = seekval;
+      if (addtoLine(temp) == -1) {
+         fprintf(stderr, "Failed to add line\n");
+      }
+      
+      /*printf("%s: %s, %ld, %i\n", cLine, wordrec, seekval, spc);*/
+      free(wordrec);
+      free(seekrec);
+      
+   } /*end of while we haven't hit the end of file */
+   free(temp.word);
+   
+   free(cFile);
+   cFile = NULL;
+   return 1;
+}
+
+int DocNoRead(FILE *docd) {
+   int newLine;
+   long FileLen;
+   long ind;
+   long lnCt;
+   long lnLen;
+   
+   
+   long stPos;
+   long tChars;
+   char cLine[MAX_LINE_LEN]; /*the current line*/
+   char *cFile;
+   char *cPtr;
+
+   recd temp;
+   
+   fseek(docd, 0L, SEEK_END);
+   FileLen = ftell(docd);
+   rewind(docd);
+
+   cFile = calloc(FileLen +1, sizeof(char));
+
+   if (cFile == NULL) {
+      fprintf(stderr, "Insufficient memory to read file\n");
+      return 0;
+   }
+
+   fread(cFile, FileLen, 1, docd); /*read entire file into cFile*/
+
+   lnCt = 0L;
+   tChars = 0L;
+
+   cPtr = cFile; /*point to beginning of array*/
+
+   while (*cPtr) { /*read until null char*/
+      ind = 0L; /*reset values*/
+      newLine = 0;
+      stPos = tChars;
+
+      
+      
+      while (*cPtr) { /*read until null char*/
+                             
+         if (!newLine) { 
+            if (*cPtr == CR || *cPtr == LF) { /*if we hit newline char*/
+               newLine = 1;
+            } else {
+               cLine[ind++] = *cPtr;
+               
+               /*cLine[ind++] = *cPtr;*/
+            }
+         } else if (*cPtr != CR && *cPtr != LF) { /*already found newline*/
+            break;
+         }
+         
+         cPtr++;
+         tChars++;
+         
+      } /*end while *cPtr*/
+      cLine[ind] = '\0'; /*end string*/
+      lnCt++;
+      lnLen = strlen(cLine);
+
+      /*PrintLine(cLine, lnCt, lnLen, stPos, NULL, 0);*/
+      temp.journal = emalloc((strlen(cLine)+1) * sizeof cLine[0]);
+      strncpy(temp.journal, cLine, strlen(cLine)+1);
+      
+      if (addtoRecd(temp) == -1) {
+         fprintf(stderr, "Failed to add line\n");
+      }
+      
+      /*printf("%s: %s, %ld, %i\n", cLine, wordrec, seekval, spc);*/
+      
+   } /*end of while we haven't hit the end of file */
+   free(cFile);
+   return 1;
+}
+
+int addtoPostlist(postlist item) {
+   if (num_es_post == num_al_post) {
+      if (num_al_dict == 0) {
+         num_al_dict = 3;
+      } else {
+         num_al_dict *= 2;
+      }
+
+      _tmp = erealloc(postings, (num_al_post * sizeof(postlist)));
+
+      if (!_tmp) {
+         fprintf(stderr, "Couldn't erealloc mem to postings\n");
+         return -1;
+      }
+      postings = (postlist*)_tmp;
+   }
+   postings[num_es_post] = item;
+   num_es_post++;
+	
+   return num_es_post;
+}
+   
+int addtoLine (line item) {
+   if (num_es_dict == num_al_dict) {
+      if (num_al_dict == 0) {
+         num_al_dict = 3;
+      } else {
+         num_al_dict *= 2;
+      }
+
+      _tmp = erealloc(dictionary, (num_al_dict *sizeof(line)));
+
+      if (!_tmp) {
+         fprintf(stderr, "Couldn't erealloc mem\n");
+
+         return (-1);
+      }
+
+      dictionary = (line*)_tmp;
+   }
+
+   dictionary[num_es_dict] = item;
+   num_es_dict++;
+	
+   return num_es_dict;
+}
+
+int addtoRecd (recd item) {
+   if (num_es_docd == num_al_docd) {
+      if (num_al_docd == 0) {
+         num_al_docd = 3;
+      } else {
+         num_al_docd *= 2;
+      }
+
+      _tmp = erealloc(docdex, (num_al_docd *sizeof(recd)));
+
+      if (!_tmp) {
+         fprintf(stderr, "Couldn't erealloc mem\n");
+
+         return (-1);
+      }
+
+      docdex = (recd*)_tmp;
+   }
+
+   docdex[num_es_docd] = item;
+   num_es_docd++;
+	
+   return num_es_docd;   
+}
